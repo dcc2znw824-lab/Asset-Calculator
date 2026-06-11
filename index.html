@@ -606,6 +606,11 @@
       <div class="chart-card-title">细分资产分布</div>
       <div class="sub-charts-grid" id="subChartsGrid"></div>
     </div>
+
+    <div class="chart-card" id="wealthRankCard" style="display:none;">
+      <div class="chart-card-title">全球财富排名</div>
+      <div id="wealthRankContent"></div>
+    </div>
   </div>
 </div>
 
@@ -1009,6 +1014,8 @@ function renderCharts() {
 
   // Risk check
   renderRisk(total);
+  // Wealth rank
+  renderWealthRank(total);
 }
 
 function lightenColor(hex, idx) {
@@ -1088,6 +1095,111 @@ function renderRisk(total) {
         <strong>风险提醒：</strong>${r.isSub ? '子类' : '资产类别'}「${r.name}」占比达 <strong>${r.pct}%</strong>，集中度过高。建议审视持仓结构，${r.isSub ? '适当分散至该类别其他标的' : '考虑将部分资产调配至其他类别'}，以降低单一${r.isSub ? '标的' : '资产'}风险。
       </div>
     </div>`).join('') + `</div>`;
+}
+
+// ---- WEALTH RANKING ----
+// Exchange rates to USD (approximate)
+const TO_USD = { '¥': 1/7.25, '$': 1, 'HK$': 1/7.78, 'A$': 1/1.53, '€': 1/0.92 };
+
+// Global wealth distribution thresholds in USD
+// Source: Credit Suisse Global Wealth Report 2023 (8B world population)
+// Each entry: [minUSD, topPercentLabel, descLabel]
+const WEALTH_TIERS = [
+  [0,        'Bottom 50%',  '全球后50%',   '你的净资产低于全球中位数。全球约40亿人口处于此区间。'],
+  [3900,     'Top 50%',     '全球前50%',   '你已超过全球一半人口的净资产水平。'],
+  [14000,    'Top 25%',     '全球前25%',   '你的资产超过全球75%的人口，处于中上水平。'],
+  [55000,    'Top 10%',     '全球前10%',   '你已跻身全球财富前10%，超越约72亿人中的90%。'],
+  [170000,   'Top 5%',      '全球前5%',    '你的净资产位于全球前5%，属于高净值人群。'],
+  [560000,   'Top 1%',      '全球前1%',    '你已进入全球财富前1%，净资产超越约79亿人中的99%。'],
+  [2000000,  'Top 0.1%',    '全球前0.1%',  '极高净值人群，全球约800万人拥有同等量级的财富。'],
+  [10000000, 'Top 0.01%',   '全球前0.01%', '顶级财富阶层，全球约80万人处于此量级。'],
+];
+
+function getWealthTier(usd) {
+  let tier = WEALTH_TIERS[0];
+  for (let i = WEALTH_TIERS.length - 1; i >= 0; i--) {
+    if (usd >= WEALTH_TIERS[i][0]) { tier = WEALTH_TIERS[i]; break; }
+  }
+  return tier;
+}
+
+function getTopPct(usd) {
+  // Interpolated top-% number for display
+  const steps = [
+    [0, 50], [3900, 50], [14000, 25], [55000, 10],
+    [170000, 5], [560000, 1], [2000000, 0.1], [10000000, 0.01]
+  ];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (usd >= steps[i][0]) {
+      if (i === steps.length - 1) return steps[i][1];
+      const [aUSD, aPct] = steps[i];
+      const [bUSD, bPct] = steps[i + 1];
+      const t = (usd - aUSD) / (bUSD - aUSD);
+      return +(aPct - (aPct - bPct) * t).toFixed(2);
+    }
+  }
+  return 50;
+}
+
+function renderWealthRank(totalLocal) {
+  const card = document.getElementById('wealthRankCard');
+  const content = document.getElementById('wealthRankContent');
+  if (totalLocal <= 0) { card.style.display = 'none'; return; }
+
+  card.style.display = '';
+  const cur = getCurrency();
+  const rate = TO_USD[cur] || 1;
+  const usd = totalLocal * rate;
+  const tier = getWealthTier(usd);
+  const topPct = getTopPct(usd);
+  const barFill = Math.max(2, Math.min(98, 100 - topPct));
+
+  // Next tier
+  const curIdx = WEALTH_TIERS.indexOf(tier);
+  const nextTier = WEALTH_TIERS[curIdx + 1];
+  let nextHint = '';
+  if (nextTier) {
+    const nextUSD = nextTier[0];
+    const nextLocal = nextUSD / rate;
+    const diff = nextLocal - totalLocal;
+    const diffFmt = diff >= 1e8 ? (diff/1e8).toFixed(1)+'亿'
+                  : diff >= 1e4 ? (diff/1e4).toFixed(1)+'万'
+                  : diff.toLocaleString(undefined, {maximumFractionDigits:0});
+    nextHint = `<div style="margin-top:12px;padding:9px 12px;background:rgba(0,212,255,0.04);border:1px solid rgba(0,212,255,0.12);border-left:2px solid rgba(0,212,255,0.4);font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-muted);letter-spacing:0.5px;">
+      <span style="color:var(--accent);">▶</span> 距离进入 <span style="color:var(--accent);">${nextTier[2]}</span> 还需 <span style="color:var(--yellow);">${cur}${diffFmt}</span>
+    </div>`;
+  }
+
+  // Bar segments for visual scale
+  const tiers = WEALTH_TIERS.map((t, i) => {
+    const active = i === curIdx;
+    const passed = i < curIdx;
+    return `<div style="flex:1;height:6px;background:${active ? 'var(--accent)' : passed ? 'rgba(0,212,255,0.25)' : 'rgba(255,255,255,0.05)'};${active ? 'box-shadow:0 0 8px var(--accent);' : ''}margin:0 1px;transition:all 0.3s;"></div>`;
+  }).join('');
+
+  content.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1.5px;margin-bottom:6px;">// GLOBAL_RANK_ESTIMATE</div>
+        <div style="font-family:'Share Tech Mono',monospace;font-size:38px;font-weight:400;color:var(--accent);text-shadow:var(--glow);line-height:1;">
+          前 ${topPct < 1 ? topPct.toFixed(2) : topPct < 10 ? topPct.toFixed(1) : Math.round(topPct)}%
+        </div>
+        <div style="font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:600;color:var(--text);margin-top:4px;letter-spacing:1px;">${tier[2]}</div>
+        <div style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:4px;">≈ USD ${usd >= 1e6 ? (usd/1e6).toFixed(2)+'M' : usd >= 1e3 ? (usd/1e3).toFixed(1)+'K' : usd.toFixed(0)}</div>
+      </div>
+      <div style="flex:2;min-width:240px;">
+        <div style="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:1px;margin-bottom:8px;">WEALTH_SPECTRUM</div>
+        <div style="display:flex;align-items:center;margin-bottom:4px;">${tiers}</div>
+        <div style="display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--text-dim);letter-spacing:0.5px;">
+          <span>后50%</span><span>前25%</span><span>前10%</span><span>前5%</span><span>前1%</span><span>前0.1%</span><span>前0.01%</span>
+        </div>
+        <div style="margin-top:12px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:500;color:var(--text-muted);line-height:1.6;">${tier[3]}</div>
+        ${nextHint}
+      </div>
+    </div>
+    <div style="margin-top:14px;font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--text-dim);letter-spacing:0.5px;border-top:1px solid var(--border);padding-top:10px;">
+      // DATA_SOURCE: Credit Suisse Global Wealth Report 2023 · 汇率为估算值 · 仅供参考
+    </div>`;
 }
 
 function renderAll() {
